@@ -11,6 +11,7 @@ import { useCookies } from './hooks/useCookies';
 import { useToasts } from './hooks/useToasts';
 import { useColumnResize } from './hooks/useColumnResize';
 import { useSettings } from './hooks/useSettings';
+import { useSelection } from './hooks/useSelection';
 import { buildExportFilename, sortCookies } from './util';
 import { CookieImportSchema } from '../shared/cookie-schema';
 import { t } from './i18n';
@@ -42,9 +43,6 @@ export function App({ socket }: Props) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [filter, setFilter] = useState('');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [anchorId, setAnchorId] = useState<string | null>(null);
-  const [focusId, setFocusId] = useState<string | null>(null);
 
   const sorted = useMemo(
     () => (sort ? sortCookies(cookies, sort.column, sort.dir) : cookies),
@@ -69,120 +67,14 @@ export function App({ socket }: Props) {
   }, [sorted, settings.showFilterBar, settings.filterBy, filter]);
 
   const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
-  const visibleIdIndex = useMemo(() => {
-    const m = new Map<string, number>();
-    for (let i = 0; i < visibleIds.length; i++) m.set(visibleIds[i]!, i);
-    return m;
-  }, [visibleIds]);
+  const { selectedIds, clearSelection, prepareContextMenu, onRowClick } = useSelection(
+    visibleIds,
+    !menu && !editor,
+  );
 
   useEffect(() => {
     document.body.classList.toggle('filter-bar-visible', settings.showFilterBar);
   }, [settings.showFilterBar]);
-
-  useEffect(() => {
-    setSelectedIds((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Set<string>();
-      for (const id of prev) {
-        if (visibleIdIndex.has(id)) next.add(id);
-        else changed = true;
-      }
-      return changed ? next : prev;
-    });
-    setAnchorId((prev) => (prev && visibleIdIndex.has(prev) ? prev : null));
-    setFocusId((prev) => (prev && visibleIdIndex.has(prev) ? prev : null));
-  }, [visibleIdIndex]);
-
-  const clearSelection = () => {
-    setSelectedIds(new Set());
-    setAnchorId(null);
-    setFocusId(null);
-  };
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (menu || editor) return;
-      if (e.key === 'Escape') {
-        clearSelection();
-        return;
-      }
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      const inEditable =
-        tag === 'INPUT' || tag === 'TEXTAREA' || !!target?.isContentEditable;
-
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
-        if (inEditable) return;
-        e.preventDefault();
-        setSelectedIds(new Set(visibleIds));
-        setAnchorId(visibleIds[0] ?? null);
-        setFocusId(visibleIds[visibleIds.length - 1] ?? null);
-        return;
-      }
-
-      if (e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-        if (inEditable) return;
-        if (visibleIds.length === 0) return;
-        const dir = e.key === 'ArrowDown' ? 1 : -1;
-        const curFocusIdx = focusId !== null ? visibleIdIndex.get(focusId) : undefined;
-        const curAnchorIdx = anchorId !== null ? visibleIdIndex.get(anchorId) : undefined;
-        let nextFocusIdx: number;
-        let nextAnchorIdx: number;
-        if (curFocusIdx !== undefined && curAnchorIdx !== undefined) {
-          nextFocusIdx = Math.max(0, Math.min(visibleIds.length - 1, curFocusIdx + dir));
-          nextAnchorIdx = curAnchorIdx;
-        } else {
-          nextFocusIdx = dir === 1 ? 0 : visibleIds.length - 1;
-          nextAnchorIdx = nextFocusIdx;
-        }
-        e.preventDefault();
-        const [lo, hi] =
-          nextAnchorIdx < nextFocusIdx
-            ? [nextAnchorIdx, nextFocusIdx]
-            : [nextFocusIdx, nextAnchorIdx];
-        setSelectedIds(new Set(visibleIds.slice(lo, hi + 1)));
-        setAnchorId(visibleIds[nextAnchorIdx]!);
-        setFocusId(visibleIds[nextFocusIdx]!);
-        return;
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [menu, editor, visibleIds, visibleIdIndex, anchorId, focusId]);
-
-  const onRowClick = (e: MouseEvent, cookie: UICookie) => {
-    const additive = e.ctrlKey || e.metaKey;
-    const range = e.shiftKey;
-    if (range && anchorId) {
-      const a = visibleIdIndex.get(anchorId);
-      const b = visibleIdIndex.get(cookie.id);
-      if (a === undefined || b === undefined) {
-        setSelectedIds(new Set([cookie.id]));
-        setAnchorId(cookie.id);
-        setFocusId(cookie.id);
-        return;
-      }
-      const [lo, hi] = a < b ? [a, b] : [b, a];
-      setSelectedIds(new Set(visibleIds.slice(lo, hi + 1)));
-      setFocusId(cookie.id);
-      return;
-    }
-    if (additive) {
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(cookie.id)) next.delete(cookie.id);
-        else next.add(cookie.id);
-        return next;
-      });
-      setAnchorId(cookie.id);
-      setFocusId(cookie.id);
-      return;
-    }
-    setSelectedIds(new Set([cookie.id]));
-    setAnchorId(cookie.id);
-    setFocusId(cookie.id);
-  };
 
   const onSort = (col: SortColumn) => {
     setSort((prev) => {
@@ -194,15 +86,7 @@ export function App({ socket }: Props) {
   const openMenuFor = (e: MouseEvent, cookie: UICookie | null) => {
     e.stopPropagation();
     e.preventDefault();
-    if (cookie) {
-      if (selectedIds.size < 2 && !selectedIds.has(cookie.id)) {
-        setSelectedIds(new Set([cookie.id]));
-        setAnchorId(cookie.id);
-        setFocusId(cookie.id);
-      }
-    } else {
-      clearSelection();
-    }
+    prepareContextMenu(cookie?.id ?? null);
     setMenu({ x: e.clientX, y: e.clientY, cookie });
   };
 
@@ -327,7 +211,7 @@ export function App({ socket }: Props) {
         onSort={onSort}
         showCopyIcons={settings.showCopyIcons}
         selectedIds={selectedIds}
-        onRowClick={onRowClick}
+        onRowClick={(e, c) => onRowClick(e, c.id)}
         onFillerClick={clearSelection}
         onRowContextMenu={(e, c) => openMenuFor(e, c)}
         onFillerContextMenu={(e) => openMenuFor(e, null)}

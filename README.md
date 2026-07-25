@@ -15,6 +15,7 @@ Features:
 - Live reloading (no need to close and open the inspector when you change URLs)
 - Import and export cookies
 
+
 ## Installation
 
 The easiest way to install the extension is from the [Chrome Web Store](https://chromewebstore.google.com/detail/cookies-tab-in-devtools/nifkepndinooddpphmpmlkimamhbjdhd).
