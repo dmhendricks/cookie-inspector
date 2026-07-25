@@ -8,10 +8,61 @@ export type Cookie = chrome.cookies.Cookie;
 export type CookieFormInput = ValidatedCookieFormInput;
 export type UpdatePayload = ValidatedUpdatePayload;
 
+type CookieLike = Pick<
+  Cookie,
+  | 'name'
+  | 'value'
+  | 'domain'
+  | 'path'
+  | 'secure'
+  | 'httpOnly'
+  | 'hostOnly'
+  | 'session'
+  | 'sameSite'
+  | 'storeId'
+> & { expirationDate?: number };
+
 function urlForCookie(cookie: Pick<Cookie, 'domain' | 'path' | 'secure'>): string {
   const protocol = cookie.secure ? 'https' : 'http';
   const host = cookie.domain.startsWith('.') ? cookie.domain.slice(1) : cookie.domain;
   return `${protocol}://${host}${cookie.path ?? '/'}`;
+}
+
+/** Name/domain/path/hostOnly/storeId form the cookie's identity in Chrome. */
+function identityChanged(prev: CookieLike, next: CookieLike): boolean {
+  return (
+    prev.name !== next.name ||
+    prev.domain !== next.domain ||
+    prev.path !== next.path ||
+    prev.hostOnly !== next.hostOnly ||
+    prev.storeId !== next.storeId
+  );
+}
+
+function toSetDetails(cookie: CookieLike, url: string): chrome.cookies.SetDetails {
+  const details: chrome.cookies.SetDetails = {
+    url,
+    name: cookie.name,
+    value: cookie.value,
+    path: cookie.path,
+    secure: cookie.secure,
+    httpOnly: cookie.httpOnly,
+    sameSite: cookie.sameSite,
+    storeId: cookie.storeId,
+  };
+  if (!cookie.hostOnly) {
+    details.domain = cookie.domain;
+  }
+  if (cookie.session) {
+    details.expirationDate = undefined;
+  } else if (cookie.expirationDate !== undefined) {
+    details.expirationDate = cookie.expirationDate;
+  }
+  return details;
+}
+
+async function restoreCookie(prev: CookieLike): Promise<void> {
+  await chrome.cookies.set(toSetDetails(prev, urlForCookie(prev)));
 }
 
 /** tabId → last known URL. Cleared on navigation / disconnect. */
@@ -108,44 +159,44 @@ export const CookieService = {
   },
 
   /**
-   * Merge previous + changed and re-set the cookie. Removes the prior cookie
-   * first so renames or domain/path changes don't leave a stale record.
-   * Preserves sameSite, storeId, and any other server-set attributes.
+   * Merge previous + changed and re-set the cookie.
+   *
+   * When identity (name/domain/path/hostOnly/storeId) is unchanged, a single
+   * `cookies.set` overwrites in place — no remove, so a failed set cannot
+   * orphan the cookie. When identity changes, remove the old record first,
+   * then set; if set fails, restore `previousAttributes`.
    */
   async update(tabId: number, payload: UpdatePayload): Promise<Cookie | null> {
     const { previousAttributes: prev, changedAttributes: changed } = payload;
     const tabUrlValue = await tabUrl(tabId);
+    const merged: CookieLike = { ...prev, ...changed };
+    const setUrl = tabUrlValue || urlForCookie(merged);
+    const setDetails = toSetDetails(merged, setUrl);
 
-    const merged = { ...prev, ...changed };
+    if (!identityChanged(prev, merged)) {
+      return chrome.cookies.set(setDetails);
+    }
 
-    const removeUrl = urlForCookie(prev);
     await chrome.cookies.remove({
-      url: removeUrl,
+      url: urlForCookie(prev),
       name: prev.name,
       storeId: prev.storeId,
     });
 
-    const setDetails: chrome.cookies.SetDetails = {
-      url: tabUrlValue || urlForCookie(merged),
-      name: merged.name,
-      value: merged.value,
-      path: merged.path,
-      secure: merged.secure,
-      httpOnly: merged.httpOnly,
-      sameSite: merged.sameSite,
-      storeId: merged.storeId,
-    };
-
-    if (!merged.hostOnly) {
-      setDetails.domain = merged.domain;
+    try {
+      const result = await chrome.cookies.set(setDetails);
+      if (!result) {
+        await restoreCookie(prev);
+        return null;
+      }
+      return result;
+    } catch (err) {
+      try {
+        await restoreCookie(prev);
+      } catch {
+        // Prefer surfacing the set failure; restore is best-effort.
+      }
+      throw err;
     }
-
-    if (merged.session) {
-      setDetails.expirationDate = undefined;
-    } else if (merged.expirationDate !== undefined) {
-      setDetails.expirationDate = merged.expirationDate;
-    }
-
-    return chrome.cookies.set(setDetails);
   },
 };

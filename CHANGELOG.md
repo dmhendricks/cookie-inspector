@@ -1,5 +1,9 @@
 # Cookies Tab in DevTools Changelog
 
+### Unreleased
+
+- Safer cookie updates: in-place overwrite when identity is unchanged; restore on failed rename/domain/path `set`. Serialize background work per tab.
+
 ### Release 3.3.1
 
 - Added Indonesian translation

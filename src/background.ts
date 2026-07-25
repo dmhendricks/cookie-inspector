@@ -11,6 +11,8 @@ const PortMessageSchema = v.object({
   data: v.optional(v.unknown()),
 });
 
+type PortMessage = v.InferOutput<typeof PortMessageSchema>;
+
 /**
  * Map of tabId → connected devtools port. Lost when the SW suspends; that's
  * fine — the panel reconnects and re-sends `saveListener` on resume.
@@ -22,6 +24,21 @@ const ports = new Map<number, chrome.runtime.Port>();
  * pushes for these; the panel sends a fresh read when it resumes.
  */
 const paused = new Set<number>();
+
+/**
+ * Serialize async work per tab so cookie mutations / reads / nav pushes cannot
+ * interleave (e.g. update + import racing on the same cookie).
+ */
+const tabChains = new Map<number, Promise<unknown>>();
+
+function runExclusive(tabId: number, work: () => Promise<void>): void {
+  const prev = tabChains.get(tabId) ?? Promise.resolve();
+  const curr = prev.catch(() => {}).then(work);
+  tabChains.set(tabId, curr);
+  void curr.finally(() => {
+    if (tabChains.get(tabId) === curr) tabChains.delete(tabId);
+  });
+}
 
 function send(port: chrome.runtime.Port, command: string, data: unknown): void {
   try {
@@ -44,7 +61,7 @@ async function onCommitted(
 ): Promise<void> {
   if (details.frameId !== 0) return;
   CookieService.rememberTabUrl(details.tabId, details.url);
-  await pushCookies(details.tabId);
+  runExclusive(details.tabId, () => pushCookies(details.tabId));
 }
 
 async function onHistoryStateUpdated(
@@ -52,7 +69,7 @@ async function onHistoryStateUpdated(
 ): Promise<void> {
   if (details.frameId !== 0) return;
   CookieService.rememberTabUrl(details.tabId, details.url);
-  await pushCookies(details.tabId);
+  runExclusive(details.tabId, () => pushCookies(details.tabId));
 }
 
 function onBeforeNavigate(
@@ -81,10 +98,8 @@ function detachNavigationListeners(): void {
   chrome.webNavigation.onBeforeNavigate.removeListener(onBeforeNavigate);
 }
 
-async function handle(rawMsg: unknown, port: chrome.runtime.Port): Promise<void> {
-  const parsed = v.safeParse(PortMessageSchema, rawMsg);
-  if (!parsed.success) return;
-  const { command, tabId, data } = parsed.output;
+async function handle(msg: PortMessage, port: chrome.runtime.Port): Promise<void> {
+  const { command, tabId, data } = msg;
 
   switch (command) {
     case 'saveListener': {
@@ -166,7 +181,8 @@ async function handle(rawMsg: unknown, port: chrome.runtime.Port): Promise<void>
 chrome.runtime.onConnect.addListener((port) => {
   if (port.sender?.id !== chrome.runtime.id) return;
   port.onMessage.addListener((msg: unknown) => {
-    void handle(msg, port);
+    const parsed = v.safeParse(PortMessageSchema, msg);
+    if (!parsed.success) return;
+    runExclusive(parsed.output.tabId, () => handle(parsed.output, port));
   });
 });
-
