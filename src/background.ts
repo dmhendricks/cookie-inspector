@@ -43,6 +43,7 @@ async function onCommitted(
   details: chrome.webNavigation.WebNavigationTransitionCallbackDetails,
 ): Promise<void> {
   if (details.frameId !== 0) return;
+  CookieService.rememberTabUrl(details.tabId, details.url);
   await pushCookies(details.tabId);
 }
 
@@ -50,6 +51,7 @@ async function onHistoryStateUpdated(
   details: chrome.webNavigation.WebNavigationTransitionCallbackDetails,
 ): Promise<void> {
   if (details.frameId !== 0) return;
+  CookieService.rememberTabUrl(details.tabId, details.url);
   await pushCookies(details.tabId);
 }
 
@@ -57,6 +59,8 @@ function onBeforeNavigate(
   details: chrome.webNavigation.WebNavigationBaseCallbackDetails,
 ): void {
   if (details.frameId !== 0) return;
+  // URL is about to change — drop the cache so in-flight ops don't use a stale URL.
+  CookieService.invalidateTabUrl(details.tabId);
   const port = ports.get(details.tabId);
   if (!port) return;
   if (paused.has(details.tabId)) return;
@@ -89,6 +93,7 @@ async function handle(rawMsg: unknown, port: chrome.runtime.Port): Promise<void>
       port.onDisconnect.addListener(() => {
         if (ports.get(tabId) === port) ports.delete(tabId);
         paused.delete(tabId);
+        CookieService.invalidateTabUrl(tabId);
         if (ports.size === 0) detachNavigationListeners();
       });
       return;

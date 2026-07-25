@@ -14,12 +14,46 @@ function urlForCookie(cookie: Pick<Cookie, 'domain' | 'path' | 'secure'>): strin
   return `${protocol}://${host}${cookie.path ?? '/'}`;
 }
 
+/** tabId → last known URL. Cleared on navigation / disconnect. */
+const tabUrlCache = new Map<number, string>();
+/** In-flight tabs.get promises so concurrent ops share one lookup. */
+const tabUrlInflight = new Map<number, Promise<string>>();
+
 async function tabUrl(tabId: number): Promise<string> {
-  const tab = await chrome.tabs.get(tabId);
-  return tab.url ?? '';
+  const cached = tabUrlCache.get(tabId);
+  if (cached !== undefined) return cached;
+
+  const inflight = tabUrlInflight.get(tabId);
+  if (inflight) return inflight;
+
+  const pending = chrome.tabs
+    .get(tabId)
+    .then((tab) => {
+      const url = tab.url ?? '';
+      tabUrlCache.set(tabId, url);
+      return url;
+    })
+    .finally(() => {
+      tabUrlInflight.delete(tabId);
+    });
+
+  tabUrlInflight.set(tabId, pending);
+  return pending;
 }
 
 export const CookieService = {
+  /** Drop cached URL so the next op re-reads chrome.tabs.get. */
+  invalidateTabUrl(tabId: number): void {
+    tabUrlCache.delete(tabId);
+    tabUrlInflight.delete(tabId);
+  },
+
+  /** Seed/refresh the cache from a known navigation URL (avoids tabs.get). */
+  rememberTabUrl(tabId: number, url: string): void {
+    tabUrlInflight.delete(tabId);
+    tabUrlCache.set(tabId, url);
+  },
+
   async list(tabId: number): Promise<Cookie[]> {
     const url = await tabUrl(tabId);
     if (!url) return [];
