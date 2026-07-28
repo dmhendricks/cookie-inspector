@@ -17,7 +17,7 @@ function loadLocale(locale: string): LocaleFile {
 function placeholderRefs(message: string): string[] {
   // chrome.i18n placeholders look like $NAME$ (named) or $1/$2 (positional)
   return [...message.matchAll(/\$([A-Za-z0-9_]+)\$|\$(\d+)/g)]
-    .map((m) => (m[1] ?? m[2]).toLowerCase())
+    .map((m) => (m[1] ?? m[2]!).toLowerCase())
     .sort();
 }
 
@@ -41,18 +41,21 @@ describe('_locales consistency', () => {
     });
 
     it('has a non-empty message string for every key', () => {
-      const empty = keys.filter(
-        (k) => typeof data[k].message !== 'string' || data[k].message.trim() === '',
-      );
+      const empty = keys.filter((k) => {
+        const entry = data[k];
+        return typeof entry?.message !== 'string' || entry.message.trim() === '';
+      });
       expect(empty).toEqual([]);
     });
 
     it('uses the same placeholder references as the default locale', () => {
       const mismatches: Record<string, { base: string[]; locale: string[] }> = {};
       for (const k of baseKeys) {
-        if (!(k in data)) continue;
-        const expected = placeholderRefs(base[k].message);
-        const actual = placeholderRefs(data[k].message);
+        const baseEntry = base[k];
+        const localeEntry = data[k];
+        if (!baseEntry || !localeEntry) continue;
+        const expected = placeholderRefs(baseEntry.message);
+        const actual = placeholderRefs(localeEntry.message);
         if (expected.join(',') !== actual.join(',')) {
           mismatches[k] = { base: expected, locale: actual };
         }
