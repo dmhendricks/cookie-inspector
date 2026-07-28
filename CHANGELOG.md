@@ -5,6 +5,7 @@
 - Safer cookie updates: in-place overwrite when identity is unchanged; restore on failed rename/domain/path `set`. Serialize background work per tab.
 - Fix cookie delete to target by cookie URL + `storeId` (not tab URL + name only), matching remove-all.
 - Add `@testing-library/preact` + jsdom and cover `useSelection` (click, range, keyboard, prune).
+- Survive extension reload without console spam: reload the DevTools panel when possible; otherwise keep the last UI frozen (Style Detective–style quiet failure).
 
 ### Release 3.3.1
 

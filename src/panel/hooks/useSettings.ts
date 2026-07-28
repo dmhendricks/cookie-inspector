@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'preact/hooks';
+import { isExtensionContextValid } from '../util';
 
 export type FilterBy = 'name' | 'value' | 'name-value';
 
@@ -34,9 +35,14 @@ export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
 
   useEffect(() => {
-    chrome.storage.sync.get(KEYS, (raw) => {
-      setSettings(resolve(raw));
-    });
+    if (!isExtensionContextValid()) return;
+    try {
+      chrome.storage.sync.get(KEYS, (raw) => {
+        setSettings(resolve(raw));
+      });
+    } catch {
+      return;
+    }
     const listener = (
       changes: Record<string, chrome.storage.StorageChange>,
       area: string,
@@ -44,17 +50,33 @@ export function useSettings() {
       if (area !== 'sync') return;
       const relevant = KEYS.some((key) => key in changes);
       if (!relevant) return;
-      chrome.storage.sync.get(KEYS, (raw) => {
-        setSettings(resolve(raw));
-      });
+      if (!isExtensionContextValid()) return;
+      try {
+        chrome.storage.sync.get(KEYS, (raw) => {
+          setSettings(resolve(raw));
+        });
+      } catch {
+        // Panel may have outlived an extension reload.
+      }
     };
     chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
+    return () => {
+      try {
+        chrome.storage.onChanged.removeListener(listener);
+      } catch {
+        // ignore
+      }
+    };
   }, []);
 
   const setSetting = useCallback(<K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
-    chrome.storage.sync.set({ [key]: value });
+    if (!isExtensionContextValid()) return;
+    try {
+      chrome.storage.sync.set({ [key]: value });
+    } catch {
+      // ignore
+    }
   }, []);
 
   return { settings, setSetting };

@@ -2,6 +2,15 @@ import type { UICookie, SortColumn, SortDir } from './types';
 
 const byteEncoder = new TextEncoder();
 
+/** True while this panel can still call extension APIs. */
+export function isExtensionContextValid(): boolean {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
 export function cookieSize(c: UICookie): number {
   return byteEncoder.encode((c.name ?? '') + (c.value ?? '')).byteLength;
 }

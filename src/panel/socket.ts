@@ -1,4 +1,5 @@
 import type { Cookie } from '../background/cookie-service';
+import { isExtensionContextValid } from './util';
 
 export type IncomingCommand =
   | 'cookies:read'
@@ -21,25 +22,84 @@ export interface OutgoingMessage {
 
 type Listener = (data: unknown) => void;
 
+const PANEL_RELOAD_FLAG = '__cookieInspectorPanelReloaded__';
+
+/**
+ * DevTools panels can outlive an extension reload. Style Detective avoids this
+ * class of bug because it has no surviving panel — orphaned content scripts
+ * simply no-op. Here we (1) try to reload the panel document so it picks up the
+ * new extension, and (2) if that already failed, go quiet like Style Detective
+ * instead of spamming reconnect / chrome.i18n errors.
+ */
 export class Socket {
   readonly tabId: number;
-  private port: chrome.runtime.Port;
+  private port: chrome.runtime.Port | null = null;
   private listeners = new Map<string, Set<Listener>>();
+  private dead = false;
 
   constructor(tabId: number) {
     this.tabId = tabId;
-    this.port = this.connect();
+    if (!isExtensionContextValid()) {
+      this.markDead();
+      return;
+    }
+    try {
+      this.port = this.connect();
+      try {
+        sessionStorage.removeItem(PANEL_RELOAD_FLAG);
+      } catch {
+        // ignore
+      }
+    } catch {
+      this.recoverOrQuiet();
+    }
+  }
+
+  get isDead(): boolean {
+    return this.dead;
+  }
+
+  private markDead(): void {
+    this.dead = true;
+    this.port = null;
+  }
+
+  /** Prefer reloading the panel (picks up new extension); otherwise stay silent. */
+  private recoverOrQuiet(): void {
+    this.markDead();
+    try {
+      if (!sessionStorage.getItem(PANEL_RELOAD_FLAG)) {
+        sessionStorage.setItem(PANEL_RELOAD_FLAG, '1');
+        window.location.reload();
+      }
+    } catch {
+      // ignore — keep last-rendered UI frozen
+    }
   }
 
   private connect(): chrome.runtime.Port {
+    if (!isExtensionContextValid()) {
+      throw new Error('Extension context invalidated');
+    }
+
     const port = chrome.runtime.connect();
     port.onMessage.addListener((msg: IncomingMessage) => {
       const set = this.listeners.get(msg.command);
       if (set) for (const fn of set) fn(msg.data);
     });
     port.onDisconnect.addListener(() => {
-      this.port = this.connect();
-      this.send({ command: 'saveListener' });
+      if (this.dead) return;
+      // SW idle (context still valid): reconnect. Extension reload: recover/quiet.
+      if (!isExtensionContextValid()) {
+        this.recoverOrQuiet();
+        return;
+      }
+      try {
+        this.port = this.connect();
+        this.send({ command: 'saveListener' });
+      } catch {
+        this.recoverOrQuiet();
+      }
     });
     return port;
   }
@@ -55,11 +115,20 @@ export class Socket {
   }
 
   send(msg: Omit<OutgoingMessage, 'tabId'>): void {
+    if (this.dead || !this.port) return;
     try {
       this.port.postMessage({ ...msg, tabId: this.tabId });
     } catch {
-      this.port = this.connect();
-      this.port.postMessage({ ...msg, tabId: this.tabId });
+      if (!isExtensionContextValid()) {
+        this.recoverOrQuiet();
+        return;
+      }
+      try {
+        this.port = this.connect();
+        this.port.postMessage({ ...msg, tabId: this.tabId });
+      } catch {
+        this.recoverOrQuiet();
+      }
     }
   }
 
