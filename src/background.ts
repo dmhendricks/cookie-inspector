@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import { CookieService } from './background/cookie-service';
 import {
   CookieFormInputSchema,
+  CookieSchema,
   UpdatePayloadSchema,
 } from './shared/cookie-schema';
 
@@ -141,9 +142,9 @@ async function handle(msg: PortMessage, port: chrome.runtime.Port): Promise<void
     }
 
     case 'cookies:delete': {
-      const input = v.safeParse(CookieFormInputSchema, data ?? {});
+      const input = v.safeParse(CookieSchema, data ?? {});
       if (!input.success) return;
-      await CookieService.delete(tabId, input.output.name ?? '');
+      await CookieService.delete(tabId, input.output);
       send(port, command, input.output);
       return;
     }

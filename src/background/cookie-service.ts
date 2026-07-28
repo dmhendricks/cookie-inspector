@@ -132,9 +132,15 @@ export const CookieService = {
     return chrome.cookies.set(details);
   },
 
-  async delete(tabId: number, name: string): Promise<chrome.cookies.CookieDetails | null> {
-    const url = await tabUrl(tabId);
-    return chrome.cookies.remove({ url, name });
+  async delete(
+    _tabId: number,
+    cookie: Pick<Cookie, 'name' | 'domain' | 'path' | 'secure' | 'storeId'>,
+  ): Promise<chrome.cookies.CookieDetails | null> {
+    return chrome.cookies.remove({
+      url: urlForCookie(cookie),
+      name: cookie.name,
+      storeId: cookie.storeId,
+    });
   },
 
   async importMerge(tabId: number, inputs: CookieFormInput[]): Promise<Cookie[]> {
